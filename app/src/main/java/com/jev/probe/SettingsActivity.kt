@@ -74,13 +74,19 @@ class SettingsActivity : AppCompatActivity() {
         card2.addView(label("关系描述（给 Jev 判断用）"))
         val relEdit = edit(prefs.relationship, Prefs.DEFAULT_REL)
         card2.addView(relEdit)
+        card2.addView(label("我的回复风格（给 DeepSeek 生成用）"))
+        val styleEdit = edit(prefs.replyStyle, Prefs.DEFAULT_REPLY_STYLE).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 3
+        }
+        card2.addView(styleEdit)
         card2.addView(label("会话白名单（每行一个关键词，空=所有会话）"))
         val wlEdit = edit(prefs.whitelist.joinToString("\n"), "留空则对所有会话生效").apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             minLines = 2
         }
         card2.addView(wlEdit)
-        val autoRow = toggleRow("对方发消息时自动分析", prefs.autoAnalyze)
+        val autoRow = toggleRow("自动分析新消息（关闭=只手动分析）", prefs.autoAnalyze)
         card2.addView(autoRow)
         root.addView(card2)
 
@@ -110,8 +116,9 @@ class SettingsActivity : AppCompatActivity() {
             prefs.deepSeekKey = deepSeekEdit.text.toString()
             prefs.replyModel = modelEdit.text.toString().ifBlank { Prefs.DEFAULT_REPLY_MODEL }
             prefs.relationship = relEdit.text.toString().ifBlank { Prefs.DEFAULT_REL }
+            prefs.replyStyle = styleEdit.text.toString().ifBlank { Prefs.DEFAULT_REPLY_STYLE }
             prefs.whitelist = wlEdit.text.toString().split("\n").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
-            prefs.autoAnalyze = (autoRow.tag as? Boolean) ?: true
+            prefs.autoAnalyze = (autoRow.tag as? Boolean) ?: false
             prefs.overlayOpacity = seek.progress + 60
         }
 
@@ -136,7 +143,7 @@ class SettingsActivity : AppCompatActivity() {
                     Msg("me", "在"),
                     Msg("other", "那你说说昨天答应我的事")
                 ))
-                val client = JevClient(tk, dk, model)
+                val client = JevClient(tk, dk, model, prefs.replyStyle)
 
                 val judge = client.judge(demo, prefs.relationship)
                 val typeSafeLine = if (judge.error != null) {
@@ -172,7 +179,7 @@ class SettingsActivity : AppCompatActivity() {
                     Msg("me", "可以"),
                     Msg("other", "那你别又忘了")
                 ))
-                val a = JevClient(tk, dk, model).analyze(demo, prefs.relationship)
+                val a = JevClient(tk, dk, model, prefs.replyStyle).analyze(demo, prefs.relationship)
                 main.post {
                     result.text = if (a.error != null) {
                         "失败：${a.error}"
