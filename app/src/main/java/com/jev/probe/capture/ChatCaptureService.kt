@@ -189,29 +189,48 @@ open class ChatCaptureService : AccessibilityService() {
     private fun runAnalysis() {
         val snapshot = pendingSnapshot ?: return
         if (analyzing) return
-        if (!prefs.hasAllKeys()) { main.post { overlay?.showError("请先设置 TypeSafe 和 DeepSeek 两个 API Key") }; return }
+        if (!prefs.hasAllKeys()) {
+            main.post { overlay?.showError("请先设置 TypeSafe 和 DeepSeek 两个 API Key") }
+            return
+        }
         analyzing = true
         main.post { overlay?.showLoading() }
-        val client = JevClient(prefs.typeSafeKey, prefs.deepSeekKey, prefs.replyModel)
+        val client = JevClient(
+            prefs.typeSafeKey,
+            prefs.deepSeekKey,
+            prefs.replyModel,
+            prefs.replyStyle
+        )
         val rel = prefs.relationship
-        // Judgment is fast (~1s) — show it immediately.
+
+        // Run judgment first so the DeepSeek drafting prompt can use Jev's
+        // interpretation instead of generating candidates blind.
         submit {
             val judgment = client.judge(snapshot, rel)
-            main.post {
-                if (judgment.error != null) { analyzing = false; overlay?.showError(judgment.error) }
-                else overlay?.showJudgment(judgment)
+            if (judgment.error != null) {
+                main.post {
+                    analyzing = false
+                    overlay?.showError(judgment.error)
+                }
+                return@submit
             }
-        }
-        // Candidate replies are slower (generative + rank) — fill in when ready.
-        submit {
-            val ranked = try { client.draftAndRank(snapshot, rel) } catch (e: Exception) { emptyList() }
+
+            // Show the fast Jev judgment immediately, then continue drafting.
+            main.post { overlay?.showJudgment(judgment) }
+
+            val ranked = try {
+                client.draftAndRank(snapshot, rel, judgment)
+            } catch (e: Exception) {
+                Log.w(TAG, "draft/rank failed: ${e.message}")
+                emptyList()
+            }
+
             main.post {
                 analyzing = false
                 overlay?.showReplies(ranked) { text -> fillInput(text) }
             }
         }
     }
-
     /** Fill the chat input box with the chosen reply (never sends). */
     private fun fillInput(text: String) {
         submit {
