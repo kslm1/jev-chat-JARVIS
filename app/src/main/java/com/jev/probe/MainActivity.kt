@@ -83,8 +83,20 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
+        container.addView(sectionLabel("分析模式"))
+        container.addView(actionRow(
+            if (prefs.autoAnalyze) "自动分析：已开启" else "自动分析：已关闭",
+            if (prefs.autoAnalyze)
+                "对方发来新消息时自动调用 API。点击这里可改为只手动分析。"
+            else
+                "进入聊天只显示 Jev 圆球，不调用 API；点“分析当前对话”才调用。"
+        ) {
+            prefs.autoAnalyze = !prefs.autoAnalyze
+            build()
+        })
+
         container.addView(sectionLabel("其他"))
-        container.addView(actionRow("设置", "TypeSafe Key · DeepSeek Key · 模型 · 关系 · 白名单") {
+        container.addView(actionRow("设置", "TypeSafe Key · DeepSeek Key · 模型 · 关系 · 回复风格 · 白名单") {
             startActivity(Intent(this, SettingsActivity::class.java))
         })
 
