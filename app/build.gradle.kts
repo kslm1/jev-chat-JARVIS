@@ -7,8 +7,11 @@ plugins {
 }
 
 val releaseProps = Properties().apply {
-    val f = file(System.getenv("JEV_KEYSTORE_PROPS") ?: "H:/android/keys/jev-release.properties")
-    if (f.exists()) FileInputStream(f).use { load(it) }
+    val propsPath = System.getenv("JEV_KEYSTORE_PROPS")
+    if (!propsPath.isNullOrBlank()) {
+        val propsFile = file(propsPath)
+        if (propsFile.exists()) FileInputStream(propsFile).use { load(it) }
+    }
 }
 
 android {
