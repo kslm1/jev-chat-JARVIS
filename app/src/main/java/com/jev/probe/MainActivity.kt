@@ -129,7 +129,7 @@ class MainActivity : AppCompatActivity() {
         row.addView(text(if (ok) "✓" else "✗", 14f, if (ok) green else red, bold = true).apply {
             width = dp(22)
         })
-        row.addView(text("$label" + if (ok) okWord else noWord, 13f, sub))
+        row.addView(text(label + (if (ok) okWord else noWord), 13f, sub))
         return row
     }
 
