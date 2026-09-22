@@ -267,8 +267,38 @@ class OverlayController(private val ctx: Context) {
     // ------------------------------------------------------------ public API
 
     fun showIdle(title: String?) {
-        ensureRoot(); bubble?.alpha = 0.55f
+        ensureRoot()
+        bubble?.text = "Jev"
+        bubble?.alpha = 0.55f
+        dangerDot?.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.TRANSPARENT)
+        }
         if (lastJudgment == null) setContent(listOf(bigButton("分析当前对话") { onManualAnalyze?.invoke() }))
+    }
+
+    /**
+     * Diagnostic-only state used when an adapted app is clearly open but its
+     * message-node contract no longer matches. It intentionally shows counts
+     * and resource ids only — never chat text.
+     */
+    fun showCaptureDiagnostic(appName: String, detail: String) {
+        ensureRoot()
+        bubble?.alpha = 0.85f
+        bubble?.text = "Jev!"
+        dangerDot?.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.parseColor("#D97706"))
+            setStroke(dp(2), Color.WHITE)
+        }
+        setContent(listOf(
+            line("$appName 已检测", "#111827", 14f, true),
+            hint("聊天窗口已打开，但当前版本没有识别到消息气泡。"),
+            divider(),
+            line("采集诊断", "#6B7280", 12f, true),
+            hint(detail),
+            hint("诊断只包含节点数量和 resource-id，不包含聊天正文。")
+        ))
     }
 
     private fun bigButton(label: String, onClick: () -> Unit) = TextView(ctx).apply {
@@ -282,7 +312,7 @@ class OverlayController(private val ctx: Context) {
     }
 
     fun showLoading() {
-        ensureRoot(); bubble?.alpha = 1f
+        ensureRoot(); bubble?.text = "Jev"; bubble?.alpha = 1f
         setContent(listOf(hint("分析中…")))
         if (!expanded) toggle()
     }
@@ -322,7 +352,7 @@ class OverlayController(private val ctx: Context) {
     }
 
     private fun render(a: Analysis, generating: Boolean) {
-        ensureRoot(); bubble?.alpha = 1f
+        ensureRoot(); bubble?.text = "Jev"; bubble?.alpha = 1f
         panel?.background = card(18, panelBg(), stroke = true) // re-apply in case opacity changed
         val views = ArrayList<View>()
 

@@ -6,12 +6,12 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// Release signing: reads a properties file kept OUTSIDE the repo
-// (storeFile / storePassword / keyAlias / keyPassword). Override the path with
-// the JEV_KEYSTORE_PROPS env var. Without it, release builds are unsigned.
 val releaseProps = Properties().apply {
-    val f = file(System.getenv("JEV_KEYSTORE_PROPS") ?: "H:/android/keys/jev-release.properties")
-    if (f.exists()) FileInputStream(f).use { load(it) }
+    val propsPath = System.getenv("JEV_KEYSTORE_PROPS")
+    if (!propsPath.isNullOrBlank()) {
+        val propsFile = file(propsPath)
+        if (propsFile.exists()) FileInputStream(propsFile).use { load(it) }
+    }
 }
 
 android {
@@ -19,11 +19,11 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.jev.probe"
+        applicationId = "com.jev.probe.direct"
         minSdk = 30
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.2"
+        versionCode = 4
+        versionName = "1.3-direct"
     }
 
     signingConfigs {

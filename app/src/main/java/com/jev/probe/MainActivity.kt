@@ -18,17 +18,12 @@ import androidx.appcompat.app.AppCompatActivity
 import com.jev.probe.core.Prefs
 import kotlin.math.roundToInt
 
-/**
- * Home / setup screen. Card-based layout with a live readiness summary, a
- * guided permission checklist (each row reflects its real granted state), a
- * prominent on/off switch, and a link to settings.
- */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var prefs: Prefs
     private lateinit var container: LinearLayout
     private val a11yComponent =
-        "com.jev.probe/com.google.android.accessibility.selecttospeak.SelectToSpeakService"
+        "com.jev.probe.direct/com.google.android.accessibility.selecttospeak.SelectToSpeakService"
 
     private val accent = Color.parseColor("#3A7AFE")
     private val green = Color.parseColor("#16A34A")
@@ -61,19 +56,20 @@ class MainActivity : AppCompatActivity() {
     private fun build() {
         container.removeAllViews()
 
-        container.addView(text("Jev 聊天助手", 24f, ink, bold = true))
-        container.addView(text("在聊天 App 旁读对方消息（已支持微信、QQ、X、飞书），给出判断和候选回复。发送始终由你手动点。",
-            13f, sub).apply { setPadding(0, dp(6), 0, dp(16)) })
+        container.addView(text("Jev 助手 Direct", 24f, ink, bold = true))
+        container.addView(text(
+            "TypeSafe Jev + DeepSeek 官方 API 直连，不经过 OpenRouter。发送始终由你手动点。",
+            13f, sub
+        ).apply { setPadding(0, dp(6), 0, dp(16)) })
 
         val a11y = isA11yEnabled()
         val overlay = Settings.canDrawOverlays(this)
-        val key = prefs.hasKey()
-        val ready = a11y && overlay && key
+        val typeSafe = prefs.hasTypeSafeKey()
+        val deepSeek = prefs.hasDeepSeekKey()
+        val ready = a11y && overlay && typeSafe && deepSeek
 
-        // Readiness card
-        container.addView(statusCard(ready, a11y, overlay, key))
+        container.addView(statusCard(ready, a11y, overlay, typeSafe, deepSeek))
 
-        // Permission checklist
         container.addView(sectionLabel("权限设置"))
         container.addView(permCard("无障碍权限", "读取当前聊天窗口的消息文字", a11y) {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -81,19 +77,29 @@ class MainActivity : AppCompatActivity() {
         container.addView(permCard("悬浮窗权限", "在聊天窗口上方显示分析卡片", overlay) {
             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
         })
-        container.addView(permCard("自启动 + 省电无限制", "小米/HyperOS 必做，否则服务被冻结、读不到消息", null) {
+        container.addView(permCard("后台运行 / 省电限制", "Pixel 建议允许后台使用；小米/HyperOS 需自启动 + 省电无限制", null) {
             runCatching {
                 startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
             }
         })
 
-        // Actions
+        container.addView(sectionLabel("分析模式"))
+        container.addView(actionRow(
+            if (prefs.autoAnalyze) "自动分析：已开启" else "自动分析：已关闭",
+            if (prefs.autoAnalyze)
+                "对方发来新消息时自动调用 API。点击这里可改为只手动分析。"
+            else
+                "进入聊天只显示 Jev 圆球，不调用 API；点“分析当前对话”才调用。"
+        ) {
+            prefs.autoAnalyze = !prefs.autoAnalyze
+            build()
+        })
+
         container.addView(sectionLabel("其他"))
-        container.addView(actionRow("设置", "密钥 · 模型 · 关系 · 透明度 · 会话白名单") {
+        container.addView(actionRow("设置", "TypeSafe Key · DeepSeek Key · 模型 · 关系 · 回复风格 · 白名单") {
             startActivity(Intent(this, SettingsActivity::class.java))
         })
 
-        // Master toggle
         val toggle = bigToggle(prefs.enabled)
         toggle.setOnClickListener {
             prefs.enabled = !prefs.enabled
@@ -102,11 +108,18 @@ class MainActivity : AppCompatActivity() {
         container.addView(toggle)
     }
 
-    // ---------------------------------------------------------------- cards
-
-    private fun statusCard(ready: Boolean, a11y: Boolean, overlay: Boolean, key: Boolean): View {
+    private fun statusCard(
+        ready: Boolean,
+        a11y: Boolean,
+        overlay: Boolean,
+        typeSafe: Boolean,
+        deepSeek: Boolean
+    ): View {
         val c = cardBox()
-        val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val head = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         head.addView(dot(if (ready) green else red).apply {
             (layoutParams as LinearLayout.LayoutParams).rightMargin = dp(10)
         })
@@ -114,17 +127,19 @@ class MainActivity : AppCompatActivity() {
         c.addView(head)
         c.addView(checkLine("无障碍", a11y))
         c.addView(checkLine("悬浮窗", overlay))
-        c.addView(checkLine("密钥", key, okWord = "已设", noWord = "未设"))
+        c.addView(checkLine("TypeSafe Key", typeSafe, "已设", "未设"))
+        c.addView(checkLine("DeepSeek Key", deepSeek, "已设", "未设"))
         return c
     }
 
     private fun checkLine(label: String, ok: Boolean, okWord: String = "已开", noWord: String = "未开"): View {
         val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             setPadding(0, dp(5), 0, 0)
         }
         row.addView(text(if (ok) "✓" else "✗", 14f, if (ok) green else red, bold = true).apply {
-            (this as TextView).width = dp(22)
+            width = dp(22)
         })
         row.addView(text(label + (if (ok) okWord else noWord), 13f, sub))
         return row
@@ -132,7 +147,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun permCard(title: String, desc: String, granted: Boolean?, onClick: () -> Unit): View {
         val c = cardBox()
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         val left = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
@@ -149,7 +167,10 @@ class MainActivity : AppCompatActivity() {
     private fun actionRow(title: String, desc: String, onClick: () -> Unit): View {
         val c = cardBox()
         c.setOnClickListener { onClick() }
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         val left = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
@@ -162,20 +183,18 @@ class MainActivity : AppCompatActivity() {
         return c
     }
 
-    private fun bigToggle(on: Boolean): View {
-        return TextView(this).apply {
-            text = if (on) "助手已开启 · 点击关闭" else "助手已关闭 · 点击开启"
-            textSize = 15f; gravity = Gravity.CENTER; setTypeface(typeface, Typeface.BOLD)
-            setTextColor(if (on) Color.WHITE else accent)
-            background = roundBg(dp(14), if (on) accent else Color.WHITE, stroke = !on)
-            setPadding(dp(16), dp(15), dp(16), dp(15))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(18) }
-        }
+    private fun bigToggle(on: Boolean): View = TextView(this).apply {
+        text = if (on) "助手已开启 · 点击关闭" else "助手已关闭 · 点击开启"
+        textSize = 15f
+        gravity = Gravity.CENTER
+        setTypeface(typeface, Typeface.BOLD)
+        setTextColor(if (on) Color.WHITE else accent)
+        background = roundBg(dp(14), if (on) accent else Color.WHITE, stroke = !on)
+        setPadding(dp(16), dp(15), dp(16), dp(15))
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(18) }
     }
-
-    // ---------------------------------------------------------------- atoms
 
     private fun cardBox(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
@@ -191,17 +210,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun text(t: String, size: Float, color: Int, bold: Boolean = false) = TextView(this).apply {
-        text = t; textSize = size; setTextColor(color)
+        text = t
+        textSize = size
+        setTextColor(color)
         if (bold) setTypeface(typeface, Typeface.BOLD)
     }
 
     private fun dot(color: Int) = View(this).apply {
-        background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(color) }
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(color)
+        }
         layoutParams = LinearLayout.LayoutParams(dp(10), dp(10))
     }
 
     private fun btn(label: String, enabled: Boolean, onClick: () -> Unit) = TextView(this).apply {
-        text = label; textSize = 13f; gravity = Gravity.CENTER; setTypeface(typeface, Typeface.BOLD)
+        text = label
+        textSize = 13f
+        gravity = Gravity.CENTER
+        setTypeface(typeface, Typeface.BOLD)
         setTextColor(if (enabled) Color.WHITE else sub)
         background = roundBg(dp(10), if (enabled) accent else Color.parseColor("#E5E7EB"))
         setPadding(dp(16), dp(8), dp(16), dp(8))
@@ -209,13 +236,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun roundBg(radius: Int, color: Int, stroke: Boolean = false) = GradientDrawable().apply {
-        cornerRadius = radius.toFloat(); setColor(color)
+        cornerRadius = radius.toFloat()
+        setColor(color)
         if (stroke) setStroke(dp(1), accent)
     }
 
     private fun isA11yEnabled(): Boolean {
-        val enabled = Settings.Secure.getString(contentResolver,
-            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
+        val enabled = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
         return enabled.contains(a11yComponent)
     }
 }

@@ -15,26 +15,33 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Talks to OpenRouter: one generative call to draft 3 candidate replies, then a
- * single Jev "decisions" call carrying all 7 judgment questions plus the ranking
- * question (speculative fan-out). Uses HttpURLConnection only (no deps).
+ * Direct provider client:
+ * - TypeSafe Jev: https://api.typesafe.ai/v1/systemone
+ * - DeepSeek:     https://api.deepseek.com/chat/completions
  *
- * The key is passed in per call; it is never logged.
+ * The two API keys are intentionally separate. Neither key is logged.
  */
-class JevClient(private val key: String, private val replyModel: String) {
+class JevClient(
+    private val typeSafeKey: String,
+    private val deepSeekKey: String,
+    private val replyModel: String,
+    private val replyStyle: String = ""
+) {
 
-    private val decisionsUrl = "https://openrouter.ai/api/alpha/decisions"
-    private val chatUrl = "https://openrouter.ai/api/v1/chat/completions"
+    private val decisionsUrl = "https://api.typesafe.ai/v1/systemone"
+    private val chatUrl = "https://api.deepseek.com/chat/completions"
 
-    /** The 7 judgment questions only (fast, ~1s). No candidate generation. */
+    /** The 7 Jev judgment questions only. */
     fun judge(snapshot: ChatSnapshot, relationship: String): Analysis {
         val start = System.currentTimeMillis()
         try {
+            if (typeSafeKey.isBlank()) throw ProviderException("TypeSafe", "未设置 API Key")
             val body = JSONObject()
-                .put("model", "typesafe/jev-1.13")
+                .put("model", "jev-latest")
                 .put("state", JevQuestions.buildState(snapshot, relationship))
                 .put("questions", JevQuestions.judge())
-            val answers = postJson(decisionsUrl, body).optJSONObject("answers") ?: JSONObject()
+            val answers = postJson(decisionsUrl, body, typeSafeKey, "TypeSafe")
+                .optJSONObject("answers") ?: JSONObject()
             return Analysis(
                 trueIntent = parseChoice(answers.optJSONObject("true_intent")),
                 dangerLevel = parseScore(answers.optJSONObject("danger_level")),
@@ -48,54 +55,127 @@ class JevClient(private val key: String, private val replyModel: String) {
             )
         } catch (e: Exception) {
             Log.w(TAG, "judge failed: ${e.message}")
-            return Analysis(null, null, null, null, null, null, null, emptyList(),
-                System.currentTimeMillis() - start, error = readableError(e))
+            return Analysis(
+                null, null, null, null, null, null, null, emptyList(),
+                System.currentTimeMillis() - start, error = readableError(e)
+            )
         }
     }
 
-    /** Draft 3 candidate replies (generative model) then Jev-rank them. Slower. */
-    fun draftAndRank(snapshot: ChatSnapshot, relationship: String): List<RankedReply> {
-        val candidates = generateCandidates(snapshot, relationship)
-        val questions = JSONObject().put("best_reply",
-            JevQuestions.rankQuestion(candidates).getJSONObject("best_reply"))
+    /** Generate exactly 3 replies with the official DeepSeek API. */
+    fun draftCandidates(
+        snapshot: ChatSnapshot,
+        relationship: String,
+        judgment: Analysis? = null
+    ): List<String> {
+        if (deepSeekKey.isBlank()) throw ProviderException("DeepSeek", "未设置 API Key")
+        return generateCandidates(snapshot, relationship, judgment)
+    }
+
+    /** Draft with DeepSeek, then rank the three replies with TypeSafe Jev. */
+    fun draftAndRank(
+        snapshot: ChatSnapshot,
+        relationship: String,
+        judgment: Analysis? = null
+    ): List<RankedReply> {
+        val candidates = draftCandidates(snapshot, relationship, judgment)
+        if (typeSafeKey.isBlank()) throw ProviderException("TypeSafe", "未设置 API Key")
+        val questions = JSONObject().put(
+            "best_reply",
+            JevQuestions.rankQuestion(candidates, replyStyle).getJSONObject("best_reply")
+        )
         val body = JSONObject()
-            .put("model", "typesafe/jev-1.13")
+            .put("model", "jev-latest")
             .put("state", JevQuestions.buildState(snapshot, relationship))
             .put("questions", questions)
-        val answers = postJson(decisionsUrl, body).optJSONObject("answers") ?: JSONObject()
+        val answers = postJson(decisionsUrl, body, typeSafeKey, "TypeSafe")
+            .optJSONObject("answers") ?: JSONObject()
         return parseRanked(answers.optJSONObject("best_reply"), candidates)
     }
 
-    /** Convenience for the settings connectivity test: judge + replies, sequential. */
+    /** Full end-to-end connectivity helper used by the settings screen. */
     fun analyze(snapshot: ChatSnapshot, relationship: String): Analysis {
         val a = judge(snapshot, relationship)
         if (a.error != null) return a
-        val ranked = try { draftAndRank(snapshot, relationship) } catch (e: Exception) { emptyList() }
+        val ranked = try {
+            draftAndRank(snapshot, relationship, a)
+        } catch (e: Exception) {
+            return a.copy(error = readableError(e))
+        }
         return a.copy(rankedReplies = ranked)
     }
 
-    /** Ask a generative model for exactly 3 varied candidate replies (Chinese). */
-    private fun generateCandidates(snapshot: ChatSnapshot, relationship: String): List<String> {
-        val convo = snapshot.messages.takeLast(10).joinToString("\n") {
+    private fun generateCandidates(
+        snapshot: ChatSnapshot,
+        relationship: String,
+        judgment: Analysis?
+    ): List<String> {
+        val convo = snapshot.messages.takeLast(10).joinToString("\\n") {
             (if (it.side == "me") "我" else "对方") + "：" + it.text
         }
-        val sys = "你是中文即时通讯回复助手。只输出一个 JSON 数组，含且仅含 3 条候选回复文本，" +
-            "三条策略要有区别（例如：一条稳妥承接、一条给具体行动或承诺、一条简短低姿态）。" +
-            "每条不超过 40 字，口语、自然、像真人在聊天软件里发消息。不要解释，不要加引号以外的内容，直接输出 JSON 数组。"
-        val user = "关系：$relationship\n\n最近对话：\n$convo\n\n请给出 3 条候选回复。"
+
+        val judgmentText = if (judgment == null) {
+            "未提供 Jev 判断；只根据对话本身生成。"
+        } else {
+            listOf(
+                "真实意图=${judgment.trueIntent?.choice ?: "未知"}",
+                "危险度=${judgment.dangerLevel?.score?.let { String.format("%.1f", it) } ?: "未知"}/${judgment.dangerLevel?.maxLevel ?: 9}",
+                "对方需要=${judgment.sheNeeds?.choice ?: "未知"}",
+                "最佳动作=${judgment.bestAction?.choice ?: "未知"}",
+                "现在适合给实质回复=${judgment.shouldReplyNow?.let { if (it >= 0.5) "是" else "否" } ?: "未知"}",
+                "是否纯字面问题=${judgment.literalQuestion?.let { if (it >= 0.5) "是" else "否" } ?: "未知"}"
+            ).joinToString("；")
+        }
+
+        val style = replyStyle.ifBlank {
+            "简短、口语化、自然，像本人微信聊天；不客服腔，不擅自承诺。"
+        }
+
+        val sys = """
+            你是“用户本人”的中文即时通讯回复副驾，不是客服，也不是替用户做决定的人。
+            任务：根据最近对话和 Jev 的判断，生成 3 条“用户本人可能真的会发”的候选回复。
+
+            强制规则：
+            1. 不得凭空编造事实、计划、时间、地点、食物、承诺或已经做过的事。
+            2. 对话里没出现、用户没明确表达过的行动，不要替用户决定。
+            3. 如果信息不足，可以保持开放、反问或简短承接，不要为了“显得有帮助”硬加方案。
+            4. 三条候选应保持同一个核心意图，只在措辞、语气、长短上有轻微差异；不要强行做三种完全不同策略。
+            5. 优先符合“我的回复风格”，其次才是通用礼貌。
+            6. 每条尽量 8~30 个汉字，最长不超过 40 字；口语、自然、像微信真人聊天。
+            7. 只输出一个 JSON 数组，含且仅含 3 个字符串，不要解释。
+        """.trimIndent()
+
+        val user = """
+            关系：$relationship
+
+            我的回复风格：
+            $style
+
+            Jev 判断：
+            $judgmentText
+
+            最近对话：
+            $convo
+
+            请生成 3 条候选回复。
+        """.trimIndent()
+
         val messages = JSONArray()
             .put(JSONObject().put("role", "system").put("content", sys))
             .put(JSONObject().put("role", "user").put("content", user))
+
         val body = JSONObject()
             .put("model", replyModel)
             .put("messages", messages)
-            .put("temperature", 0.8)
-        val resp = postJson(chatUrl, body)
+            .put("thinking", JSONObject().put("type", "disabled"))
+            .put("temperature", 0.55)
+            .put("max_tokens", 500)
+
+        val resp = postJson(chatUrl, body, deepSeekKey, "DeepSeek")
         val content = resp.optJSONArray("choices")?.optJSONObject(0)
             ?.optJSONObject("message")?.optString("content") ?: ""
         return parseThree(content)
     }
-
     private fun parseThree(content: String): List<String> {
         val start = content.indexOf('[')
         val end = content.lastIndexOf(']')
@@ -109,8 +189,8 @@ class JevClient(private val key: String, private val replyModel: String) {
                 return out
             } catch (_: Exception) { }
         }
-        // Fallback: split lines.
-        val lines = content.split("\n").map { it.trim().trimStart('-', '*', '1', '2', '3', '.', ' ', '"') }
+        val lines = content.split("\n")
+            .map { it.trim().trimStart('-', '*', '1', '2', '3', '.', ' ', '"') }
             .filter { it.isNotBlank() }
         val out = lines.take(3).toMutableList()
         while (out.size < 3) out.add("（稍等，我看下）")
@@ -136,14 +216,17 @@ class JevClient(private val key: String, private val replyModel: String) {
     private fun parseRanked(o: JSONObject?, candidates: List<String>): List<RankedReply> {
         val keys = listOf("reply_a", "reply_b", "reply_c")
         val probs = o?.optJSONObject("probabilities")
-        val list = candidates.mapIndexed { i, text ->
+        return candidates.mapIndexed { i, text ->
             RankedReply(text, probs?.optDouble(keys.getOrElse(i) { "" }, 0.0) ?: 0.0)
-        }
-        return list.sortedByDescending { it.prob }
+        }.sortedByDescending { it.prob }
     }
 
-    /** POST JSON with one retry chain for 429/529 (exponential backoff). */
-    private fun postJson(urlStr: String, body: JSONObject): JSONObject {
+    private fun postJson(
+        urlStr: String,
+        body: JSONObject,
+        apiKey: String,
+        provider: String
+    ): JSONObject {
         var attempt = 0
         var lastErr: Exception? = null
         while (attempt < 3) {
@@ -152,47 +235,58 @@ class JevClient(private val key: String, private val replyModel: String) {
                 conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
                     connectTimeout = 15000
-                    readTimeout = 25000
+                    readTimeout = 30000
                     doOutput = true
-                    setRequestProperty("Authorization", "Bearer $key")
+                    setRequestProperty("Authorization", "Bearer $apiKey")
                     setRequestProperty("Content-Type", "application/json")
-                    setRequestProperty("HTTP-Referer", "https://jev-assistant.local")
-                    setRequestProperty("X-Title", "Jev Assistant")
+                    setRequestProperty("Accept", "application/json")
+                    setRequestProperty("User-Agent", "JevAssistantDirect/1.3")
                 }
                 val bytes = body.toString().toByteArray(Charsets.UTF_8)
                 conn.outputStream.use { os: OutputStream -> os.write(bytes) }
                 val code = conn.responseCode
-                if (code == 429 || code == 529) {
+                if (code == 429 || code == 500 || code == 502 || code == 503 || code == 529) {
                     attempt++
-                    Thread.sleep(500L * (1L shl attempt))
+                    if (attempt < 3) Thread.sleep(500L * (1L shl attempt))
                     continue
                 }
                 val stream = if (code in 200..299) conn.inputStream else conn.errorStream
                 val text = BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
-                if (code !in 200..299) throw RuntimeException("HTTP $code: ${text.take(160)}")
+                if (code !in 200..299) {
+                    throw ProviderException(provider, "HTTP $code: ${text.take(220)}")
+                }
                 return JSONObject(text)
             } catch (e: Exception) {
-                lastErr = e
-                if (e.message?.contains("HTTP 4") == true) throw e // client error: no retry
+                lastErr = if (e is ProviderException) e else ProviderException(provider, e.message ?: e.javaClass.simpleName)
+                if (e.message?.contains("HTTP 4") == true) throw lastErr
                 attempt++
                 if (attempt < 3) Thread.sleep(500L * (1L shl attempt))
             } finally {
                 conn?.disconnect()
             }
         }
-        throw lastErr ?: RuntimeException("request failed")
+        throw lastErr ?: ProviderException(provider, "request failed")
     }
 
-    private fun readableError(e: Exception): String {
+    fun readableError(e: Exception): String {
+        val provider = (e as? ProviderException)?.provider
         val m = e.message ?: e.javaClass.simpleName
+        val prefix = provider?.let { "$it：" } ?: ""
         return when {
-            m.contains("HTTP 401") -> "密钥无效或未设置（401）"
-            m.contains("HTTP 4") -> "请求被拒：$m"
-            m.contains("timed out") || m.contains("timeout") -> "网络超时，请检查连接"
-            m.contains("Unable to resolve host") || m.contains("Failed to connect") -> "无法连接网络"
-            else -> "分析失败：$m"
+            m.contains("HTTP 401") || m.contains("HTTP 403") -> "${prefix}密钥无效或无权限"
+            m.contains("HTTP 402") -> "${prefix}余额不足或计费受限"
+            m.contains("HTTP 429") -> "${prefix}请求过于频繁"
+            m.contains("HTTP 4") -> "${prefix}请求被拒：$m"
+            m.contains("timed out", ignoreCase = true) || m.contains("timeout", ignoreCase = true) ->
+                "${prefix}网络超时"
+            m.contains("Unable to resolve host") || m.contains("Failed to connect") ->
+                "${prefix}无法连接服务器"
+            else -> "${prefix}$m"
         }
     }
+
+    private class ProviderException(val provider: String, detail: String) :
+        RuntimeException(detail)
 
     companion object { private const val TAG = "JEVASSIST" }
 }

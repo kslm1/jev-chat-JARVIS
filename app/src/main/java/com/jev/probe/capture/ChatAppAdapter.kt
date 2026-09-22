@@ -70,23 +70,43 @@ class WeChatAdapter : ChatAppAdapter {
 
     override fun extract(root: AccessibilityNodeInfo, res: Resources): ChatSnapshot? {
         val width = res.displayMetrics.widthPixels
-        val bubbles = ArrayList<Triple<Int, Int, String>>() // top, centerX, text
+        val height = res.displayMetrics.heightPixels
+
+        // First try the legacy verified node id. This keeps compatibility with
+        // older WeChat builds where message text lived under id/bkl.
+        val legacy = extractLegacy(root, res, width)
+        if (legacy != null) return legacy
+
+        // Newer WeChat builds may rotate obfuscated resource ids. Instead of
+        // pinning another short-lived id, detect a chat by the editable input
+        // and collect visible text nodes from the message viewport.
+        return extractByGeometry(root, res, width, height)
+    }
+
+    private fun extractLegacy(
+        root: AccessibilityNodeInfo,
+        res: Resources,
+        width: Int
+    ): ChatSnapshot? {
+        val bubbles = ArrayList<Triple<Int, Int, String>>()
         var firstBubbleTop = Int.MAX_VALUE
 
         val stack = ArrayDeque<AccessibilityNodeInfo>()
         stack.addLast(root)
         var guard = 0
-        while (stack.isNotEmpty() && guard < 5000) {
+        while (stack.isNotEmpty() && guard < 6000) {
             guard++
             val node = stack.removeLast()
-            val id = node.viewIdResourceName
             val text = node.text?.toString()
-            if (id == BUBBLE_ID && !text.isNullOrBlank()) {
-                val b = Rect(); node.getBoundsInScreen(b)
-                bubbles.add(Triple(b.top, b.centerX(), text))
+            if (node.viewIdResourceName == LEGACY_BUBBLE_ID && !text.isNullOrBlank()) {
+                val b = Rect()
+                node.getBoundsInScreen(b)
+                bubbles.add(Triple(b.top, b.centerX(), text.trim()))
                 if (b.top < firstBubbleTop) firstBubbleTop = b.top
             }
-            for (i in node.childCount - 1 downTo 0) node.getChild(i)?.let { stack.addLast(it) }
+            for (i in node.childCount - 1 downTo 0) {
+                node.getChild(i)?.let { stack.addLast(it) }
+            }
         }
         if (bubbles.isEmpty()) return null
 
@@ -98,8 +118,127 @@ class WeChatAdapter : ChatAppAdapter {
         return ChatSnapshot(title, msgs)
     }
 
+    private fun extractByGeometry(
+        root: AccessibilityNodeInfo,
+        res: Resources,
+        width: Int,
+        height: Int
+    ): ChatSnapshot? {
+        var inputTop = height
+        var hasEditable = false
+
+        // top, left, right, text
+        val candidates = ArrayList<FallbackBubble>()
+        val seen = HashSet<String>()
+
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        stack.addLast(root)
+        var guard = 0
+        while (stack.isNotEmpty() && guard < 8000) {
+            guard++
+            val node = stack.removeLast()
+            val cls = node.className?.toString() ?: ""
+            val b = Rect()
+            node.getBoundsInScreen(b)
+
+            if (node.isEditable || cls == "android.widget.EditText") {
+                hasEditable = true
+                if (b.top in 1 until inputTop) inputTop = b.top
+            }
+
+            val text = node.text?.toString()?.trim()
+            if (!text.isNullOrBlank() &&
+                !node.isEditable &&
+                text.length <= 500 &&
+                !looksLikeTimestamp(text)
+            ) {
+                val key = "${b.left},${b.top},${b.right},${b.bottom}:$text"
+                if (seen.add(key)) {
+                    candidates.add(FallbackBubble(b.top, b.bottom, b.left, b.right, text, cls))
+                }
+            }
+
+            for (i in node.childCount - 1 downTo 0) {
+                node.getChild(i)?.let { stack.addLast(it) }
+            }
+        }
+
+        // A real WeChat conversation has a message composer. Without one this
+        // is probably the chat list, contacts, moments, settings, etc.
+        if (!hasEditable) return null
+
+        val topBand = (height * 0.12f).toInt()
+        val bottomLimit = if (inputTop < height) inputTop - (height * 0.01f).toInt()
+        else (height * 0.82f).toInt()
+
+        val messageArea = candidates.filter { c ->
+            c.top > topBand &&
+            c.bottom < bottomLimit &&
+            c.right > c.left &&
+            c.bottom > c.top &&
+            !isWeChatChrome(c.text)
+        }
+
+        if (messageArea.isEmpty()) return null
+
+        val firstTop = messageArea.minOf { it.top }
+        val title = findTitleInActionBar(root, firstTop, width, res)
+
+        // Remove obvious nested duplicates: if the same text appears at nearly
+        // the same vertical position, keep the tighter text node.
+        val deduped = ArrayList<FallbackBubble>()
+        for (c in messageArea.sortedWith(compareBy<FallbackBubble> { it.top }.thenBy { it.left })) {
+            val duplicateIndex = deduped.indexOfFirst { d ->
+                d.text == c.text && kotlin.math.abs(d.top - c.top) <= 8
+            }
+            if (duplicateIndex < 0) {
+                deduped.add(c)
+            } else {
+                val old = deduped[duplicateIndex]
+                val oldArea = (old.right - old.left) * (old.bottom - old.top)
+                val newArea = (c.right - c.left) * (c.bottom - c.top)
+                if (newArea in 1 until oldArea) deduped[duplicateIndex] = c
+            }
+        }
+
+        val msgs = deduped.map { c ->
+            // WeChat incoming bubbles live on the left and our own on the right.
+            // For long multi-line bubbles use which screen edge the text block is
+            // closer to rather than centerX alone.
+            val leftGap = c.left
+            val rightGap = width - c.right
+            val side = when {
+                rightGap + (width * 0.08f).toInt() < leftGap -> "me"
+                leftGap + (width * 0.08f).toInt() < rightGap -> "other"
+                (c.left + c.right) / 2 > width / 2 -> "me"
+                else -> "other"
+            }
+            Msg(side, c.text)
+        }
+
+        return if (msgs.isEmpty()) null else ChatSnapshot(title, msgs)
+    }
+
+    private fun isWeChatChrome(text: String): Boolean {
+        val t = text.trim()
+        if (t.isEmpty()) return true
+        return t in setOf(
+            "发送", "按住 说话", "切换到按住说话", "切换到键盘",
+            "语音", "更多", "表情", "返回", "聊天信息"
+        )
+    }
+
+    private data class FallbackBubble(
+        val top: Int,
+        val bottom: Int,
+        val left: Int,
+        val right: Int,
+        val text: String,
+        val cls: String
+    )
+
     companion object {
-        private const val BUBBLE_ID = "com.tencent.mm:id/bkl"
+        private const val LEGACY_BUBBLE_ID = "com.tencent.mm:id/bkl"
     }
 }
 
