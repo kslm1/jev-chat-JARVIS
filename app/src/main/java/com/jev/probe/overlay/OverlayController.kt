@@ -267,7 +267,13 @@ class OverlayController(private val ctx: Context) {
     // ------------------------------------------------------------ public API
 
     fun showIdle(title: String?) {
-        ensureRoot(); bubble?.alpha = 0.55f
+        ensureRoot()
+        bubble?.text = "Jev"
+        bubble?.alpha = 0.55f
+        dangerDot?.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.TRANSPARENT)
+        }
         if (lastJudgment == null) setContent(listOf(bigButton("分析当前对话") { onManualAnalyze?.invoke() }))
     }
 
@@ -306,7 +312,7 @@ class OverlayController(private val ctx: Context) {
     }
 
     fun showLoading() {
-        ensureRoot(); bubble?.alpha = 1f
+        ensureRoot(); bubble?.text = "Jev"; bubble?.alpha = 1f
         setContent(listOf(hint("分析中…")))
         if (!expanded) toggle()
     }
@@ -346,7 +352,7 @@ class OverlayController(private val ctx: Context) {
     }
 
     private fun render(a: Analysis, generating: Boolean) {
-        ensureRoot(); bubble?.alpha = 1f
+        ensureRoot(); bubble?.text = "Jev"; bubble?.alpha = 1f
         panel?.background = card(18, panelBg(), stroke = true) // re-apply in case opacity changed
         val views = ArrayList<View>()
 
