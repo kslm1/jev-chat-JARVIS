@@ -24,7 +24,8 @@ import java.net.URL
 class JevClient(
     private val typeSafeKey: String,
     private val deepSeekKey: String,
-    private val replyModel: String
+    private val replyModel: String,
+    private val replyStyle: String = ""
 ) {
 
     private val decisionsUrl = "https://api.typesafe.ai/v1/systemone"
@@ -62,18 +63,26 @@ class JevClient(
     }
 
     /** Generate exactly 3 replies with the official DeepSeek API. */
-    fun draftCandidates(snapshot: ChatSnapshot, relationship: String): List<String> {
+    fun draftCandidates(
+        snapshot: ChatSnapshot,
+        relationship: String,
+        judgment: Analysis? = null
+    ): List<String> {
         if (deepSeekKey.isBlank()) throw ProviderException("DeepSeek", "未设置 API Key")
-        return generateCandidates(snapshot, relationship)
+        return generateCandidates(snapshot, relationship, judgment)
     }
 
     /** Draft with DeepSeek, then rank the three replies with TypeSafe Jev. */
-    fun draftAndRank(snapshot: ChatSnapshot, relationship: String): List<RankedReply> {
-        val candidates = draftCandidates(snapshot, relationship)
+    fun draftAndRank(
+        snapshot: ChatSnapshot,
+        relationship: String,
+        judgment: Analysis? = null
+    ): List<RankedReply> {
+        val candidates = draftCandidates(snapshot, relationship, judgment)
         if (typeSafeKey.isBlank()) throw ProviderException("TypeSafe", "未设置 API Key")
         val questions = JSONObject().put(
             "best_reply",
-            JevQuestions.rankQuestion(candidates).getJSONObject("best_reply")
+            JevQuestions.rankQuestion(candidates, replyStyle).getJSONObject("best_reply")
         )
         val body = JSONObject()
             .put("model", "jev-latest")
@@ -89,21 +98,68 @@ class JevClient(
         val a = judge(snapshot, relationship)
         if (a.error != null) return a
         val ranked = try {
-            draftAndRank(snapshot, relationship)
+            draftAndRank(snapshot, relationship, a)
         } catch (e: Exception) {
             return a.copy(error = readableError(e))
         }
         return a.copy(rankedReplies = ranked)
     }
 
-    private fun generateCandidates(snapshot: ChatSnapshot, relationship: String): List<String> {
-        val convo = snapshot.messages.takeLast(10).joinToString("\n") {
+    private fun generateCandidates(
+        snapshot: ChatSnapshot,
+        relationship: String,
+        judgment: Analysis?
+    ): List<String> {
+        val convo = snapshot.messages.takeLast(10).joinToString("\\n") {
             (if (it.side == "me") "我" else "对方") + "：" + it.text
         }
-        val sys = "你是中文即时通讯回复助手。只输出一个 JSON 数组，含且仅含 3 条候选回复文本，" +
-            "三条策略要有区别（例如：一条稳妥承接、一条给具体行动或承诺、一条简短低姿态）。" +
-            "每条不超过 40 字，口语、自然、像真人在聊天软件里发消息。不要解释，直接输出 JSON 数组。"
-        val user = "关系：$relationship\n\n最近对话：\n$convo\n\n请给出 3 条候选回复。"
+
+        val judgmentText = if (judgment == null) {
+            "未提供 Jev 判断；只根据对话本身生成。"
+        } else {
+            listOf(
+                "真实意图=${judgment.trueIntent?.choice ?: "未知"}",
+                "危险度=${judgment.dangerLevel?.score?.let { String.format("%.1f", it) } ?: "未知"}/${judgment.dangerLevel?.maxLevel ?: 9}",
+                "对方需要=${judgment.sheNeeds?.choice ?: "未知"}",
+                "最佳动作=${judgment.bestAction?.choice ?: "未知"}",
+                "现在适合给实质回复=${judgment.shouldReplyNow?.let { if (it >= 0.5) "是" else "否" } ?: "未知"}",
+                "是否纯字面问题=${judgment.literalQuestion?.let { if (it >= 0.5) "是" else "否" } ?: "未知"}"
+            ).joinToString("；")
+        }
+
+        val style = replyStyle.ifBlank {
+            "简短、口语化、自然，像本人微信聊天；不客服腔，不擅自承诺。"
+        }
+
+        val sys = """
+            你是“用户本人”的中文即时通讯回复副驾，不是客服，也不是替用户做决定的人。
+            任务：根据最近对话和 Jev 的判断，生成 3 条“用户本人可能真的会发”的候选回复。
+
+            强制规则：
+            1. 不得凭空编造事实、计划、时间、地点、食物、承诺或已经做过的事。
+            2. 对话里没出现、用户没明确表达过的行动，不要替用户决定。
+            3. 如果信息不足，可以保持开放、反问或简短承接，不要为了“显得有帮助”硬加方案。
+            4. 三条候选应保持同一个核心意图，只在措辞、语气、长短上有轻微差异；不要强行做三种完全不同策略。
+            5. 优先符合“我的回复风格”，其次才是通用礼貌。
+            6. 每条尽量 8~30 个汉字，最长不超过 40 字；口语、自然、像微信真人聊天。
+            7. 只输出一个 JSON 数组，含且仅含 3 个字符串，不要解释。
+        """.trimIndent()
+
+        val user = """
+            关系：$relationship
+
+            我的回复风格：
+            $style
+
+            Jev 判断：
+            $judgmentText
+
+            最近对话：
+            $convo
+
+            请生成 3 条候选回复。
+        """.trimIndent()
+
         val messages = JSONArray()
             .put(JSONObject().put("role", "system").put("content", sys))
             .put(JSONObject().put("role", "user").put("content", user))
@@ -112,7 +168,7 @@ class JevClient(
             .put("model", replyModel)
             .put("messages", messages)
             .put("thinking", JSONObject().put("type", "disabled"))
-            .put("temperature", 0.8)
+            .put("temperature", 0.55)
             .put("max_tokens", 500)
 
         val resp = postJson(chatUrl, body, deepSeekKey, "DeepSeek")
@@ -120,7 +176,6 @@ class JevClient(
             ?.optJSONObject("message")?.optString("content") ?: ""
         return parseThree(content)
     }
-
     private fun parseThree(content: String): List<String> {
         val start = content.indexOf('[')
         val end = content.lastIndexOf(']')
