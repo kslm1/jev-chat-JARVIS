@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - direct-typesafe-deepseek
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
