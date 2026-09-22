@@ -3,22 +3,25 @@ package com.jev.probe.core
 import android.content.Context
 
 /**
- * App-private config store. Holds the OpenRouter key, model choices, the
- * relationship description used in Jev's state, and the conversation whitelist.
+ * App-private config store for the Direct build.
  *
- * Key handling: stored in app-private SharedPreferences (not world-readable,
- * never logged, never in code/git). Hardening to EncryptedSharedPreferences is
- * a follow-up; on the user's own device app-private storage is the MVP bar.
+ * TypeSafe and DeepSeek keys are stored separately because this build talks to
+ * both vendors directly. Keys stay in app-private SharedPreferences and are
+ * never logged or committed to git.
  */
 class Prefs(context: Context) {
 
-    private val sp = context.getSharedPreferences("jev_assistant", Context.MODE_PRIVATE)
+    private val sp = context.getSharedPreferences("jev_assistant_direct", Context.MODE_PRIVATE)
 
-    var openRouterKey: String
-        get() = sp.getString(K_KEY, "") ?: ""
-        set(v) = sp.edit().putString(K_KEY, v.trim()).apply()
+    var typeSafeKey: String
+        get() = sp.getString(K_TYPESAFE_KEY, "") ?: ""
+        set(v) = sp.edit().putString(K_TYPESAFE_KEY, v.trim()).apply()
 
-    /** Generative model for drafting the 3 candidate replies (OpenRouter chat). */
+    var deepSeekKey: String
+        get() = sp.getString(K_DEEPSEEK_KEY, "") ?: ""
+        set(v) = sp.edit().putString(K_DEEPSEEK_KEY, v.trim()).apply()
+
+    /** Generative model used only for drafting the 3 candidate replies. */
     var replyModel: String
         get() = sp.getString(K_REPLY_MODEL, DEFAULT_REPLY_MODEL) ?: DEFAULT_REPLY_MODEL
         set(v) = sp.edit().putString(K_REPLY_MODEL, v.trim()).apply()
@@ -33,30 +36,24 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(K_ENABLED, true)
         set(v) = sp.edit().putBoolean(K_ENABLED, v).apply()
 
-    /**
-     * Conversation whitelist: titles the assistant is allowed to act on. Empty
-     * set means "all conversations". Stored as a plain string set.
-     */
+    /** Empty set means all conversations. */
     var whitelist: Set<String>
         get() = sp.getStringSet(K_WHITELIST, emptySet()) ?: emptySet()
         set(v) = sp.edit().putStringSet(K_WHITELIST, v).apply()
 
-    /** Overlay panel opacity, 60..100 (%). Lower lets the chat show through. */
+    /** Overlay panel opacity, 60..100 (%). */
     var overlayOpacity: Int
         get() = sp.getInt(K_OPACITY, 92).coerceIn(60, 100)
         set(v) = sp.edit().putInt(K_OPACITY, v.coerceIn(60, 100)).apply()
 
-    /** Remembered vertical position of the bubble (px); -1 = default. */
     var bubbleY: Int
         get() = sp.getInt(K_BUBBLE_Y, -1)
         set(v) = sp.edit().putInt(K_BUBBLE_Y, v).apply()
 
-    /** Remembered horizontal position of the bubble (px); -1 = default. */
     var bubbleX: Int
         get() = sp.getInt(K_BUBBLE_X, -1)
         set(v) = sp.edit().putInt(K_BUBBLE_X, v).apply()
 
-    /** Auto-analyze on every incoming message; if false, user taps to analyze. */
     var autoAnalyze: Boolean
         get() = sp.getBoolean(K_AUTO, true)
         set(v) = sp.edit().putBoolean(K_AUTO, v).apply()
@@ -68,10 +65,13 @@ class Prefs(context: Context) {
         return wl.any { title.contains(it) }
     }
 
-    fun hasKey(): Boolean = openRouterKey.isNotBlank()
+    fun hasTypeSafeKey(): Boolean = typeSafeKey.isNotBlank()
+    fun hasDeepSeekKey(): Boolean = deepSeekKey.isNotBlank()
+    fun hasAllKeys(): Boolean = hasTypeSafeKey() && hasDeepSeekKey()
 
     companion object {
-        private const val K_KEY = "openrouter_key"
+        private const val K_TYPESAFE_KEY = "typesafe_key"
+        private const val K_DEEPSEEK_KEY = "deepseek_key"
         private const val K_REPLY_MODEL = "reply_model"
         private const val K_REL = "relationship"
         private const val K_ENABLED = "enabled"
@@ -81,9 +81,8 @@ class Prefs(context: Context) {
         private const val K_BUBBLE_X = "bubble_x"
         private const val K_AUTO = "auto_analyze"
 
-        // Reply drafting model on OpenRouter. DeepSeek is region-available in CN,
-        // strong in Chinese, and cheap (Gemini/OpenAI are region-blocked here).
-        const val DEFAULT_REPLY_MODEL = "deepseek/deepseek-chat-v3.1"
-        const val DEFAULT_REL = "对方是我的伴侣；from=me 的是我发的，from=other 的是对方发的"
+        // Current DeepSeek official API model intended for fast chat/reply drafting.
+        const val DEFAULT_REPLY_MODEL = "deepseek-flash"
+        const val DEFAULT_REL = "对方是我的普通联系人；from=me 的是我发的，from=other 的是对方发的"
     }
 }
