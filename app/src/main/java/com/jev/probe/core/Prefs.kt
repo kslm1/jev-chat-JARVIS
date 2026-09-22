@@ -31,6 +31,11 @@ class Prefs(context: Context) {
         get() = sp.getString(K_REL, DEFAULT_REL) ?: DEFAULT_REL
         set(v) = sp.edit().putString(K_REL, v).apply()
 
+    /** How generated replies should sound like the user. */
+    var replyStyle: String
+        get() = sp.getString(K_REPLY_STYLE, DEFAULT_REPLY_STYLE) ?: DEFAULT_REPLY_STYLE
+        set(v) = sp.edit().putString(K_REPLY_STYLE, v.trim()).apply()
+
     /** Master on/off for showing the overlay + running analysis. */
     var enabled: Boolean
         get() = sp.getBoolean(K_ENABLED, true)
@@ -55,7 +60,7 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putInt(K_BUBBLE_X, v).apply()
 
     var autoAnalyze: Boolean
-        get() = sp.getBoolean(K_AUTO, true)
+        get() = sp.getBoolean(K_AUTO, false)
         set(v) = sp.edit().putBoolean(K_AUTO, v).apply()
 
     fun isAllowed(title: String?): Boolean {
@@ -74,6 +79,7 @@ class Prefs(context: Context) {
         private const val K_DEEPSEEK_KEY = "deepseek_key"
         private const val K_REPLY_MODEL = "reply_model"
         private const val K_REL = "relationship"
+        private const val K_REPLY_STYLE = "reply_style"
         private const val K_ENABLED = "enabled"
         private const val K_WHITELIST = "whitelist"
         private const val K_OPACITY = "overlay_opacity"
@@ -84,5 +90,6 @@ class Prefs(context: Context) {
         // Current DeepSeek official API model intended for fast chat/reply drafting.
         const val DEFAULT_REPLY_MODEL = "deepseek-flash"
         const val DEFAULT_REL = "对方是我的普通联系人；from=me 的是我发的，from=other 的是对方发的"
+        const val DEFAULT_REPLY_STYLE = "简短、口语化、像我本人微信聊天。能一句说清就不要两句；不客服腔、不刻意讨好、不肉麻；不要替我编造事实、计划、时间或承诺；聊天里没说过的事情不要擅自决定。"
     }
 }
