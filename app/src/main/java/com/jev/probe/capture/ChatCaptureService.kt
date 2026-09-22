@@ -99,8 +99,28 @@ open class ChatCaptureService : AccessibilityService() {
         val root = rootInActiveWindow ?: return
         val pkg = root.packageName?.toString()
         val adapter = adapters[pkg] ?: return
-        // Only act inside a chat window (the adapter returns null elsewhere).
-        val snapshot = adapter.extract(root, resources) ?: return
+        // If WeChat is clearly in a chat (editable input present) but the
+        // message-node id no longer matches, show a diagnostic bubble instead
+        // of failing silently.
+        val snapshot = adapter.extract(root, resources)
+        if (snapshot == null) {
+            currentSnapshot = null
+            pendingSnapshot = null
+            if (pkg == "com.tencent.mm") {
+                val probe = probeTree(root)
+                if (probe.editableNodes > 0) {
+                    val ids = if (probe.resourceIds.isEmpty()) "无可见 resource-id"
+                    else probe.resourceIds.take(12).joinToString(", ")
+                    val detail = "节点=${probe.totalNodes} · 文本节点=${probe.textNodes} · " +
+                        "输入框=${probe.editableNodes} · 旧bkl命中=${probe.legacyBubbleHits}\n" +
+                        "IDs: $ids"
+                    main.post { overlay?.showCaptureDiagnostic("微信", detail) }
+                } else {
+                    main.post { overlay?.hide() }
+                }
+            }
+            return
+        }
         if (snapshot.messages.isEmpty()) return
         if (!prefs.isAllowed(snapshot.title)) { main.post { overlay?.hide() }; return }
 
@@ -131,6 +151,41 @@ open class ChatCaptureService : AccessibilityService() {
         main.postDelayed(debounce, 800) // debounce bursts of content-changed events
     }
 
+    private data class TreeProbe(
+        val totalNodes: Int,
+        val textNodes: Int,
+        val editableNodes: Int,
+        val legacyBubbleHits: Int,
+        val resourceIds: List<String>
+    )
+
+    /**
+     * Privacy-safe accessibility-tree probe. It never stores or logs node text;
+     * only counts and resource ids are surfaced for compatibility debugging.
+     */
+    private fun probeTree(root: AccessibilityNodeInfo): TreeProbe {
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        stack.addLast(root)
+        var total = 0
+        var texts = 0
+        var editables = 0
+        var legacyHits = 0
+        val ids = LinkedHashSet<String>()
+        while (stack.isNotEmpty() && total < 8000) {
+            val node = stack.removeLast()
+            total++
+            if (!node.text.isNullOrBlank()) texts++
+            if (node.isEditable || node.className?.toString() == "android.widget.EditText") editables++
+            node.viewIdResourceName?.let { id ->
+                if (id == "com.tencent.mm:id/bkl") legacyHits++
+                if (id.startsWith("com.tencent.mm:id/")) ids.add(id.substringAfterLast("/"))
+            }
+            for (i in node.childCount - 1 downTo 0) {
+                node.getChild(i)?.let { stack.addLast(it) }
+            }
+        }
+        return TreeProbe(total, texts, editables, legacyHits, ids.toList())
+    }
     private fun runAnalysis() {
         val snapshot = pendingSnapshot ?: return
         if (analyzing) return
